@@ -1,3 +1,4 @@
+
 import { useState } from 'react';
 import { Link as RouterLink } from 'react-router-dom';
 import {
@@ -18,36 +19,87 @@ import {
     AppBar,
     Toolbar,
     Container,
+    MenuItem,
+    CircularProgress,
+    Alert,
 } from '@mui/material';
+
 import {
     Search as SearchIcon,
-    Add as AddIcon,
-    Edit as EditIcon,
     Delete as DeleteIcon,
     ArrowBack as ArrowBackIcon,
+    Block as BlockIcon,
+    CheckCircle as CheckCircleIcon,
 } from '@mui/icons-material';
 
-// Фейковые данные для наглядности
-const mockUsers = [
-    { id: 1, name: 'Алексей Панин', email: 'alex@example.com', role: 'admin', status: 'active' },
-    { id: 2, name: 'Иван Иванов', email: 'ivan@example.com', role: 'user', status: 'active' },
-    { id: 3, name: 'Мария Петрова', email: 'maria@example.com', role: 'user', status: 'blocked' },
-    { id: 4, name: 'Сергей Сидоров', email: 'sergey@example.com', role: 'user', status: 'active' },
-];
+import { useUsers } from '@/entities/users';
 
 const AdminPage = () => {
     const [search, setSearch] = useState('');
+    const [actionError, setActionError] = useState<string | null>(null);
 
-    // Простая фильтрация по имени или email
-    const filteredUsers = mockUsers.filter(
+    const {
+        users,
+        loading,
+        error,
+        updateUserRole,
+        updateUserStatus,
+        deleteUser,
+    } = useUsers();
+
+    // Поиск по имени и email
+    const filteredUsers = users.filter(
         (user) =>
             user.name.toLowerCase().includes(search.toLowerCase()) ||
             user.email.toLowerCase().includes(search.toLowerCase())
     );
 
+    // Изменение роли
+    const handleRoleChange = async (
+        id: number,
+        role: 'admin' | 'user'
+    ) => {
+        try {
+            setActionError(null);
+            await updateUserRole({ id, role });
+        } catch (err) {
+            setActionError(
+                err instanceof Error ? err.message : 'Ошибка изменения роли'
+            );
+        }
+    };
+
+    // Блокировка / разблокировка
+    const handleStatusChange = async (
+        id: number,
+        status: 'active' | 'blocked'
+    ) => {
+        try {
+            setActionError(null);
+            await updateUserStatus({ id, status });
+        } catch (err) {
+            setActionError(
+                err instanceof Error ? err.message : 'Ошибка изменения статуса'
+            );
+        }
+    };
+
+    // Удаление пользователя
+    const handleDelete = async (id: number, name: string) => {
+        if (!window.confirm(`Удалить пользователя ${name}?`)) return;
+
+        try {
+            setActionError(null);
+            await deleteUser(id);
+        } catch (err) {
+            setActionError(
+                err instanceof Error ? err.message : 'Ошибка удаления пользователя'
+            );
+        }
+    };
+
     return (
         <Box sx={{ flexGrow: 1, bgcolor: '#f5f5f5', minHeight: '100vh', pb: 4 }}>
-            {/* Шапка сайта */}
             <AppBar position="static" color="default" elevation={1}>
                 <Toolbar>
                     <IconButton
@@ -59,30 +111,24 @@ const AdminPage = () => {
                     >
                         <ArrowBackIcon />
                     </IconButton>
-                    <Typography variant="h6" component="div" sx={{ flexGrow: 1, fontWeight: 'bold' }}>
+
+                    <Typography
+                        variant="h6"
+                        component="div"
+                        sx={{ flexGrow: 1, fontWeight: 'bold' }}
+                    >
                         Админ-панель
                     </Typography>
-                    <Button
-                        variant="contained"
-                        color="primary"
-                        startIcon={<AddIcon />}
-                        onClick={() => alert('Здесь будет открываться модалка добавления пользователя')}
-                    >
-                        Добавить
-                    </Button>
                 </Toolbar>
             </AppBar>
 
-            {/* Контент */}
             <Container maxWidth="lg" sx={{ mt: 4 }}>
-                {/* Поиск */}
                 <Box sx={{ mb: 3, display: 'flex', justifyContent: 'flex-end' }}>
                     <TextField
                         size="small"
                         placeholder="Поиск по имени или email..."
                         value={search}
                         onChange={(e) => setSearch(e.target.value)}
-                        // 👇 Заменяем InputProps на slotProps.input
                         slotProps={{
                             input: {
                                 startAdornment: (
@@ -90,15 +136,22 @@ const AdminPage = () => {
                                         <SearchIcon color="action" />
                                     </InputAdornment>
                                 ),
-                            }
+                            },
                         }}
                         sx={{ width: 300, bgcolor: 'white', borderRadius: 1 }}
                     />
                 </Box>
 
-                {/* Таблица */}
+                {error && <Alert severity="error" sx={{ mb: 2 }}>{error}</Alert>}
+
+                {actionError && (
+                    <Alert severity="error" sx={{ mb: 2 }}>
+                        {actionError}
+                    </Alert>
+                )}
+
                 <TableContainer component={Paper} elevation={3} sx={{ borderRadius: 2 }}>
-                    <Table sx={{ minWidth: 650 }} aria-label="simple table">
+                    <Table sx={{ minWidth: 850 }}>
                         <TableHead sx={{ bgcolor: '#fafafa' }}>
                             <TableRow>
                                 <TableCell><strong>ID</strong></TableCell>
@@ -109,25 +162,39 @@ const AdminPage = () => {
                                 <TableCell align="right"><strong>Действия</strong></TableCell>
                             </TableRow>
                         </TableHead>
+
                         <TableBody>
-                            {filteredUsers.length > 0 ? (
+                            {loading ? (
+                                <TableRow>
+                                    <TableCell colSpan={6} align="center" sx={{ py: 5 }}>
+                                        <CircularProgress />
+                                    </TableCell>
+                                </TableRow>
+                            ) : filteredUsers.length > 0 ? (
                                 filteredUsers.map((user) => (
-                                    <TableRow
-                                        key={user.id}
-                                        sx={{ '&:last-child td, &:last-child th': { border: 0 } }}
-                                    >
-                                        <TableCell component="th" scope="row">
-                                            {user.id}
-                                        </TableCell>
+                                    <TableRow key={user.id} hover>
+                                        <TableCell>{user.id}</TableCell>
                                         <TableCell>{user.name}</TableCell>
                                         <TableCell>{user.email}</TableCell>
+
                                         <TableCell>
-                                            <Chip
-                                                label={user.role === 'admin' ? 'Админ' : 'Пользователь'}
-                                                color={user.role === 'admin' ? 'secondary' : 'default'}
+                                            <TextField
+                                                select
                                                 size="small"
-                                            />
+                                                value={user.role}
+                                                onChange={(e) =>
+                                                    handleRoleChange(
+                                                        user.id,
+                                                        e.target.value as 'admin' | 'user'
+                                                    )
+                                                }
+                                                sx={{ minWidth: 130 }}
+                                            >
+                                                <MenuItem value="admin">Админ</MenuItem>
+                                                <MenuItem value="user">Пользователь</MenuItem>
+                                            </TextField>
                                         </TableCell>
+
                                         <TableCell>
                                             <Chip
                                                 label={user.status === 'active' ? 'Активен' : 'Заблокирован'}
@@ -136,16 +203,29 @@ const AdminPage = () => {
                                                 variant="outlined"
                                             />
                                         </TableCell>
+
                                         <TableCell align="right">
                                             <IconButton
-                                                color="primary"
-                                                onClick={() => alert(`Редактировать ${user.name}`)}
+                                                color={user.status === 'active' ? 'warning' : 'success'}
+                                                title={user.status === 'active' ? 'Заблокировать' : 'Разблокировать'}
+                                                onClick={() =>
+                                                    handleStatusChange(
+                                                        user.id,
+                                                        user.status === 'active' ? 'blocked' : 'active'
+                                                    )
+                                                }
                                             >
-                                                <EditIcon />
+                                                {user.status === 'active' ? (
+                                                    <BlockIcon />
+                                                ) : (
+                                                    <CheckCircleIcon />
+                                                )}
                                             </IconButton>
+
                                             <IconButton
                                                 color="error"
-                                                onClick={() => alert(`Удалить ${user.name}`)}
+                                                title="Удалить"
+                                                onClick={() => handleDelete(user.id, user.name)}
                                             >
                                                 <DeleteIcon />
                                             </IconButton>
@@ -162,6 +242,10 @@ const AdminPage = () => {
                         </TableBody>
                     </Table>
                 </TableContainer>
+
+                <Typography sx={{ mt: 2 }} color="text.secondary">
+                    Всего пользователей: {users.length}
+                </Typography>
             </Container>
         </Box>
     );

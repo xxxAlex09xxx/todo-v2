@@ -1,3 +1,4 @@
+
 // server/src/utils/tokens.ts
 import crypto from 'crypto';
 import { db } from '../db';
@@ -8,24 +9,28 @@ export const hashToken = (token: string): string => {
 };
 
 // Сохранить refresh-токен в БД
-export const saveRefreshToken = (userId: number, token: string): Promise<void> => {
-    return new Promise((resolve, reject) => {
-        const tokenHash = hashToken(token);
-        // 7 дней
-        const expiresAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString();
+export const saveRefreshToken = async (
+    userId: number,
+    token: string
+): Promise<void> => {
+    const tokenHash = hashToken(token);
 
-        db.run(
-            'INSERT INTO refresh_tokens (user_id, token_hash, expires_at) VALUES (?, ?, ?)',
-            [userId, tokenHash, expiresAt],
-            (err) => {
-                if (err) reject(err);
-                else resolve();
-            }
-        );
+    // 7 дней
+    const expiresAt = new Date(
+        Date.now() + 7 * 24 * 60 * 60 * 1000
+    ).toISOString();
+
+    await db.execute({
+        sql: `
+            INSERT INTO refresh_tokens
+            (user_id, token_hash, expires_at)
+            VALUES (?, ?, ?)
+        `,
+        args: [userId, tokenHash, expiresAt]
     });
 };
 
-// Найти токен в БД
+// Интерфейс сохраненного токена
 export interface StoredToken {
     id: number;
     user_id: number;
@@ -34,45 +39,38 @@ export interface StoredToken {
     revoked: number;
 }
 
-export const findRefreshToken = (token: string): Promise<StoredToken | undefined> => {
-    return new Promise((resolve, reject) => {
-        const tokenHash = hashToken(token);
-        db.get(
-            'SELECT * FROM refresh_tokens WHERE token_hash = ?',
-            [tokenHash],
-            (err, row: StoredToken | undefined) => {
-                if (err) reject(err);
-                else resolve(row);
-            }
-        );
+// Найти refresh-токен в БД
+export const findRefreshToken = async (
+    token: string
+): Promise<StoredToken | undefined> => {
+    const tokenHash = hashToken(token);
+
+    const result = await db.execute({
+        sql: 'SELECT * FROM refresh_tokens WHERE token_hash = ?',
+        args: [tokenHash]
     });
+
+    return result.rows[0] as unknown as StoredToken | undefined;
 };
 
 // Отозвать конкретный токен
-export const revokeRefreshToken = (token: string): Promise<void> => {
-    return new Promise((resolve, reject) => {
-        const tokenHash = hashToken(token);
-        db.run(
-            'UPDATE refresh_tokens SET revoked = 1 WHERE token_hash = ?',
-            [tokenHash],
-            (err) => {
-                if (err) reject(err);
-                else resolve();
-            }
-        );
+export const revokeRefreshToken = async (
+    token: string
+): Promise<void> => {
+    const tokenHash = hashToken(token);
+
+    await db.execute({
+        sql: 'UPDATE refresh_tokens SET revoked = 1 WHERE token_hash = ?',
+        args: [tokenHash]
     });
 };
 
 // Отозвать все токены пользователя
-export const revokeAllUserTokens = (userId: number): Promise<void> => {
-    return new Promise((resolve, reject) => {
-        db.run(
-            'UPDATE refresh_tokens SET revoked = 1 WHERE user_id = ?',
-            [userId],
-            (err) => {
-                if (err) reject(err);
-                else resolve();
-            }
-        );
+export const revokeAllUserTokens = async (
+    userId: number
+): Promise<void> => {
+    await db.execute({
+        sql: 'UPDATE refresh_tokens SET revoked = 1 WHERE user_id = ?',
+        args: [userId]
     });
 };

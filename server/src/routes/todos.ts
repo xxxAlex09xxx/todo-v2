@@ -1,4 +1,5 @@
 
+// server/src/routes/todos.ts
 import { Router, Response } from 'express';
 import { db } from '../db';
 import { authMiddleware, AuthRequest } from '../middlewares/authMiddleware';
@@ -16,235 +17,281 @@ interface Todo {
     created_at: string;
 }
 
-// GET /todos — получить задачи с пагинацией и фильтрацией
-todosRouter.get('/', (req: AuthRequest, res: Response) => {
-    const page = Math.max(1, parseInt(String(req.query.page), 10) || 1);
-    const limit = Math.min(50, Math.max(1, parseInt(String(req.query.limit), 10) || 5));
-    const filter = String(req.query.filter || 'all');
-
-    let where = 'WHERE user_id = ?';
-    const params = [req.userId];
-
-    if (filter === 'active') {
-        where += ' AND completed = 0';
-    } else if (filter === 'completed') {
-        where += ' AND completed = 1';
+const getUserId = (req: AuthRequest, res: Response): number | null => {
+    if (typeof req.userId !== 'number') {
+        res.status(401).json({ error: 'Необходима авторизация' });
+        return null;
     }
 
-    // Считаем количество задач с учётом фильтра
-    db.get(
-        `SELECT COUNT(*) AS total FROM todos ${where}`,
-        params,
-        (err, count: { total: number }) => {
-            if (err) {
-                res.status(500).json({ error: err.message });
-                return;
-            }
+    return req.userId;
+};
 
-            const total = count.total;
-            const totalPages = Math.ceil(total / limit);
-            const currentPage = Math.min(page, Math.max(totalPages, 1));
-            const offset = (currentPage - 1) * limit;
+// GET /todos — получить задачи с пагинацией и фильтрацией
+todosRouter.get('/', async (req: AuthRequest, res: Response) => {
+    try {
+        const userId = getUserId(req, res);
+        if (userId === null) return;
 
-            // Получаем только задачи текущей страницы
-            db.all(
-                `SELECT * FROM todos
-                 ${where}
-                 ORDER BY created_at DESC, id DESC
-                 LIMIT ? OFFSET ?`,
-                [...params, limit, offset],
-                (err, rows: Todo[]) => {
-                    if (err) {
-                        res.status(500).json({ error: err.message });
-                        return;
-                    }
+        const page = Math.max(1, parseInt(String(req.query.page), 10) || 1);
+        const limit = Math.min(50, Math.max(1, parseInt(String(req.query.limit), 10) || 5));
+        const filter = String(req.query.filter || 'all');
 
-                    // Глобальная статистика — без учёта фильтра и страницы
-                    db.get(
-                        `SELECT
-                            COUNT(*) AS total,
-                            SUM(CASE WHEN completed = 1 THEN 1 ELSE 0 END) AS completed,
-                            SUM(CASE WHEN completed = 0 THEN 1 ELSE 0 END) AS active
-                         FROM todos
-                         WHERE user_id = ?`,
-                        [req.userId],
-                        (err, stats: { total: number; completed: number; active: number }) => {
-                            if (err) {
-                                res.status(500).json({ error: err.message });
-                                return;
-                            }
+        let where = 'WHERE user_id = ?';
 
-                            res.json({
-                                todos: rows,
-                                pagination: {
-                                    page: currentPage,
-                                    limit,
-                                    total,
-                                    totalPages,
-                                },
-                                stats,
-                            });
-                        }
-                    );
-                }
-            );
+        if (filter === 'active') {
+            where += ' AND completed = 0';
+        } else if (filter === 'completed') {
+            where += ' AND completed = 1';
         }
-    );
+
+        // Количество задач с учетом фильтра
+        const countResult = await db.execute({
+            sql: `SELECT COUNT(*) AS total FROM todos ${where}`,
+            args: [userId]
+        });
+
+        const total = Number(countResult.rows[0]?.total ?? 0);
+        const totalPages = Math.ceil(total / limit);
+        const currentPage = Math.min(page, Math.max(totalPages, 1));
+        const offset = (currentPage - 1) * limit;
+
+        // Получаем задачи текущей страницы
+        const todosResult = await db.execute({
+            sql: `
+                SELECT * FROM todos
+                ${where}
+                ORDER BY created_at DESC, id DESC
+                LIMIT ? OFFSET ?
+            `,
+            args: [userId, limit, offset]
+        });
+
+        const rows = todosResult.rows as unknown as Todo[];
+
+        // Общая статистика без учета фильтра
+        const statsResult = await db.execute({
+            sql: `
+                SELECT
+                    COUNT(*) AS total,
+                    COALESCE(SUM(CASE WHEN completed = 1 THEN 1 ELSE 0 END), 0) AS completed,
+                    COALESCE(SUM(CASE WHEN completed = 0 THEN 1 ELSE 0 END), 0) AS active
+                FROM todos
+                WHERE user_id = ?
+            `,
+            args: [userId]
+        });
+
+        const statsRow = statsResult.rows[0];
+
+        const stats = {
+            total: Number(statsRow.total),
+            completed: Number(statsRow.completed),
+            active: Number(statsRow.active)
+        };
+
+        res.json({
+            todos: rows,
+            pagination: {
+                page: currentPage,
+                limit,
+                total,
+                totalPages
+            },
+            stats
+        });
+
+    } catch (err: any) {
+        console.error('Ошибка GET /todos:', err);
+        res.status(500).json({ error: err.message });
+    }
 });
 
 // GET /todos/:id — получить одну задачу
-todosRouter.get('/:id', (req: AuthRequest, res: Response) => {
-    const todoId = Number(req.params.id);
+todosRouter.get('/:id', async (req: AuthRequest, res: Response) => {
+    try {
+        const userId = getUserId(req, res);
+        if (userId === null) return;
 
-    if (isNaN(todoId)) {
-        res.status(400).json({ error: 'Некорректный id' });
-        return;
-    }
+        const todoId = Number(req.params.id);
 
-    db.get(
-        'SELECT * FROM todos WHERE id = ? AND user_id = ?',
-        [todoId, req.userId],
-        (err, todo: Todo | undefined) => {
-            if (err) {
-                res.status(500).json({ error: err.message });
-                return;
-            }
-            if (!todo) {
-                res.status(404).json({ error: 'Задача не найдена' });
-                return;
-            }
-            res.json({ todo });
+        if (!Number.isSafeInteger(todoId) || todoId <= 0) {
+            return res.status(400).json({ error: 'Некорректный id' });
         }
-    );
+
+        const result = await db.execute({
+            sql: 'SELECT * FROM todos WHERE id = ? AND user_id = ?',
+            args: [todoId, userId]
+        });
+
+        const todo = result.rows[0] as unknown as Todo | undefined;
+
+        if (!todo) {
+            return res.status(404).json({ error: 'Задача не найдена' });
+        }
+
+        res.json({ todo });
+
+    } catch (err: any) {
+        console.error('Ошибка GET /todos/:id:', err);
+        res.status(500).json({ error: err.message });
+    }
 });
 
 // POST /todos — создать задачу
-todosRouter.post('/', (req: AuthRequest, res: Response) => {
-    const { title, description } = req.body;
+todosRouter.post('/', async (req: AuthRequest, res: Response) => {
+    try {
+        const userId = getUserId(req, res);
+        if (userId === null) return;
 
-    if (!title || typeof title !== 'string' || title.trim().length === 0) {
-        res.status(400).json({ error: 'title обязателен' });
-        return;
-    }
+        const { title, description } = req.body;
 
-    const safeDescription =
-        typeof description === 'string' ? description.trim() : '';
-
-    db.run(
-        'INSERT INTO todos (title, description, user_id) VALUES (?, ?, ?)',
-        [title.trim(), safeDescription, req.userId],
-        function (this: { lastID: number }, err) {
-            if (err) {
-                res.status(500).json({ error: err.message });
-                return;
-            }
-
-            db.get(
-                'SELECT * FROM todos WHERE id = ?',
-                [this.lastID],
-                (err, todo) => {
-                    if (err) {
-                        res.status(500).json({ error: err.message });
-                        return;
-                    }
-                    res.status(201).json({ todo });
-                }
-            );
+        if (!title || typeof title !== 'string' || title.trim().length === 0) {
+            return res.status(400).json({ error: 'title обязателен' });
         }
-    );
+
+        const safeDescription =
+            typeof description === 'string' ? description.trim() : '';
+
+        const result = await db.execute({
+            sql: `
+                INSERT INTO todos (title, description, user_id)
+                VALUES (?, ?, ?)
+            `,
+            args: [title.trim(), safeDescription, userId]
+        });
+
+        const todoId = Number(result.lastInsertRowid);
+
+        const todoResult = await db.execute({
+            sql: 'SELECT * FROM todos WHERE id = ? AND user_id = ?',
+            args: [todoId, userId]
+        });
+
+        const todo = todoResult.rows[0] as unknown as Todo;
+
+        res.status(201).json({ todo });
+
+    } catch (err: any) {
+        console.error('Ошибка POST /todos:', err);
+        res.status(500).json({ error: err.message });
+    }
 });
 
 // PATCH /todos/:id — обновить задачу
-todosRouter.patch('/:id', (req: AuthRequest, res: Response) => {
-    const todoId = Number(req.params.id);
-    const { title, description, completed } = req.body;
+todosRouter.patch('/:id', async (req: AuthRequest, res: Response) => {
+    try {
+        const userId = getUserId(req, res);
+        if (userId === null) return;
 
-    if (isNaN(todoId)) {
-        res.status(400).json({ error: 'Некорректный id' });
-        return;
-    }
+        const todoId = Number(req.params.id);
+        const { title, description, completed } = req.body;
 
-    db.get(
-        'SELECT * FROM todos WHERE id = ? AND user_id = ?',
-        [todoId, req.userId],
-        (err, todo: Todo | undefined) => {
-            if (err) {
-                res.status(500).json({ error: err.message });
-                return;
-            }
-            if (!todo) {
-                res.status(404).json({ error: 'Задача не найдена' });
-                return;
-            }
-
-            const newTitle =
-                typeof title === 'string' && title.trim() ? title.trim() : todo.title;
-
-            const newDescription =
-                typeof description === 'string' ? description.trim() : todo.description;
-
-            const newCompleted =
-                typeof completed === 'boolean' ? (completed ? 1 : 0) : todo.completed;
-
-            db.run(
-                'UPDATE todos SET title = ?, description = ?, completed = ? WHERE id = ?',
-                [newTitle, newDescription, newCompleted, todoId],
-                (err) => {
-                    if (err) {
-                        res.status(500).json({ error: err.message });
-                        return;
-                    }
-
-                    db.get('SELECT * FROM todos WHERE id = ?', [todoId], (err, updated) => {
-                        if (err) {
-                            res.status(500).json({ error: err.message });
-                            return;
-                        }
-                        res.json({ todo: updated });
-                    });
-                }
-            );
+        if (!Number.isSafeInteger(todoId) || todoId <= 0) {
+            return res.status(400).json({ error: 'Некорректный id' });
         }
-    );
+
+        const existingResult = await db.execute({
+            sql: 'SELECT * FROM todos WHERE id = ? AND user_id = ?',
+            args: [todoId, userId]
+        });
+
+        const todo = existingResult.rows[0] as unknown as Todo | undefined;
+
+        if (!todo) {
+            return res.status(404).json({ error: 'Задача не найдена' });
+        }
+
+        const newTitle =
+            typeof title === 'string' && title.trim()
+                ? title.trim()
+                : todo.title;
+
+        const newDescription =
+            typeof description === 'string'
+                ? description.trim()
+                : todo.description;
+
+        const newCompleted =
+            typeof completed === 'boolean'
+                ? (completed ? 1 : 0)
+                : todo.completed;
+
+        await db.execute({
+            sql: `
+                UPDATE todos
+                SET title = ?, description = ?, completed = ?
+                WHERE id = ? AND user_id = ?
+            `,
+            args: [
+                newTitle,
+                newDescription,
+                newCompleted,
+                todoId,
+                userId
+            ]
+        });
+
+        const updatedResult = await db.execute({
+            sql: 'SELECT * FROM todos WHERE id = ? AND user_id = ?',
+            args: [todoId, userId]
+        });
+
+        const updated = updatedResult.rows[0] as unknown as Todo;
+
+        res.json({ todo: updated });
+
+    } catch (err: any) {
+        console.error('Ошибка PATCH /todos/:id:', err);
+        res.status(500).json({ error: err.message });
+    }
 });
 
 // DELETE /todos — удалить все задачи пользователя
-todosRouter.delete('/', (req: AuthRequest, res: Response) => {
-    db.run(
-        'DELETE FROM todos WHERE user_id = ?',
-        [req.userId],
-        function (this: { changes: number }, err) {
-            if (err) {
-                res.status(500).json({ error: err.message });
-                return;
-            }
-            res.json({ message: `Удалено задач: ${this.changes}` });
-        }
-    );
+todosRouter.delete('/', async (req: AuthRequest, res: Response) => {
+    try {
+        const userId = getUserId(req, res);
+        if (userId === null) return;
+
+        const result = await db.execute({
+            sql: 'DELETE FROM todos WHERE user_id = ?',
+            args: [userId]
+        });
+
+        res.json({
+            message: `Удалено задач: ${result.rowsAffected}`
+        });
+
+    } catch (err: any) {
+        console.error('Ошибка DELETE /todos:', err);
+        res.status(500).json({ error: err.message });
+    }
 });
 
 // DELETE /todos/:id — удалить одну задачу
-todosRouter.delete('/:id', (req: AuthRequest, res: Response) => {
-    const todoId = Number(req.params.id);
+todosRouter.delete('/:id', async (req: AuthRequest, res: Response) => {
+    try {
+        const userId = getUserId(req, res);
+        if (userId === null) return;
 
-    if (isNaN(todoId)) {
-        res.status(400).json({ error: 'Некорректный id' });
-        return;
-    }
+        const todoId = Number(req.params.id);
 
-    db.run(
-        'DELETE FROM todos WHERE id = ? AND user_id = ?',
-        [todoId, req.userId],
-        function (this: { changes: number }, err) {
-            if (err) {
-                res.status(500).json({ error: err.message });
-                return;
-            }
-            if (this.changes === 0) {
-                res.status(404).json({ error: 'Задача не найдена' });
-                return;
-            }
-            res.json({ message: 'Задача удалена' });
+        if (!Number.isSafeInteger(todoId) || todoId <= 0) {
+            return res.status(400).json({ error: 'Некорректный id' });
         }
-    );
+
+        const result = await db.execute({
+            sql: 'DELETE FROM todos WHERE id = ? AND user_id = ?',
+            args: [todoId, userId]
+        });
+
+        if (result.rowsAffected === 0) {
+            return res.status(404).json({ error: 'Задача не найдена' });
+        }
+
+        res.json({ message: 'Задача удалена' });
+
+    } catch (err: any) {
+        console.error('Ошибка DELETE /todos/:id:', err);
+        res.status(500).json({ error: err.message });
+    }
 });

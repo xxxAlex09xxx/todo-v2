@@ -24,7 +24,9 @@ interface User {
     email: string;
     password_hash: string;
     created_at: string;
-    role: string; // 👈 ДОБАВИЛИ
+    role: string;
+    reset_token: string | null;
+    reset_token_expires: string | null;
 }
 
 interface AuthBody {
@@ -34,101 +36,95 @@ interface AuthBody {
 
 // 📌 POST /auth/register
 authRouter.post('/register', async (req: Request<{}, {}, AuthBody>, res: Response) => {
-    const { email, password } = req.body;
+    try {
+        const { email, password } = req.body;
 
-    if (!email || !password) {
-        res.status(400).json({ error: 'Email и пароль обязательны' });
-        return;
-    }
-
-    if (password.length < 6) {
-        res.status(400).json({ error: 'Пароль должен быть минимум 6 символов' });
-        return;
-    }
-
-    db.get('SELECT id FROM users WHERE email = ?', [email], async (err, existing) => {
-        if (err) {
-            res.status(500).json({ error: err.message });
-            return;
+        if (!email || !password) {
+            return res.status(400).json({ error: 'Email и пароль обязательны' });
+        }
+        if (password.length < 6) {
+            return res.status(400).json({ error: 'Пароль должен быть минимум 6 символов' });
         }
 
-        if (existing) {
-            res.status(409).json({ error: 'Email уже занят' });
-            return;
+        // Проверяем, есть ли такой пользователь
+        const existingResult = await db.execute({
+            sql: 'SELECT id FROM users WHERE email = ?',
+            args: [email]
+        });
+        if (existingResult.rows.length > 0) {
+            return res.status(409).json({ error: 'Email уже занят' });
         }
 
         const passwordHash = await hashPassword(password);
 
-        db.run(
-            'INSERT INTO users (email, password_hash) VALUES (?, ?)',
-            [email, passwordHash],
-            async function (this: { lastID: number }, err) {
-                if (err) {
-                    res.status(500).json({ error: err.message });
-                    return;
-                }
+        // Создаем пользователя
+        const insertResult = await db.execute({
+            sql: 'INSERT INTO users (email, password_hash) VALUES (?, ?)',
+            args: [email, passwordHash]
+        });
+        
+        // @libsql/client возвращает lastInsertRowid как bigint.
+        // Преобразуем его в number, чтобы Express мог сериализовать ID в JSON.
+        const userId = Number(insertResult.lastInsertRowid);
+        if (!Number.isSafeInteger(userId) || userId <= 0) {
+            throw new Error('Не удалось создать пользователя');
+        }
 
-                const userId = this.lastID;
-                const accessToken = createAccessToken(userId);
-                const refreshToken = createRefreshToken(userId);
+        const accessToken = createAccessToken(userId);
+        const refreshToken = createRefreshToken(userId);
 
-                console.log(`\n🔵 REGISTER: Пользователь ${email} создан (ID: ${userId})`);
+        console.log(`\n🔵 REGISTER: Пользователь ${email} создан (ID: ${userId})`);
 
-                await new Promise<void>((resolve, reject) => {
-                    db.run('DELETE FROM refresh_tokens WHERE user_id = ?', [userId], (delErr) => {
-                        if (delErr) {
-                            console.error('❌ Ошибка DELETE в REGISTER:', delErr.message);
-                            reject(delErr);
-                        } else {
-                            console.log('🗑️ Старые токены в REGISTER удалены (если были)');
-                            resolve();
-                        }
-                    });
-                });
+        // Удаляем старые токены (на всякий случай)
+        await db.execute({
+            sql: 'DELETE FROM refresh_tokens WHERE user_id = ?',
+            args: [userId]
+        });
 
-                await saveRefreshToken(userId, refreshToken);
-                console.log('✅ Новый токен сохранен в REGISTER');
+        // Сохраняем новый токен
+        await saveRefreshToken(Number(userId), refreshToken);
+        console.log('✅ Новый токен сохранен в REGISTER');
 
-                res.cookie('refreshToken', refreshToken, {
-                    httpOnly: true,
-                    secure: config.isProd,
-                    sameSite: 'lax',
-                    maxAge: 7 * 24 * 60 * 60 * 1000,
-                });
-                res.status(201).json({
-                    accessToken,
-                    user: { id: userId, email, role: 'user' }, // 👈 ДОБАВИЛИ role
-                });
-            }
-        );
-    });
+        res.cookie('refreshToken', refreshToken, {
+            httpOnly: true,
+            secure: config.isProd,
+            sameSite: 'lax',
+            maxAge: 7 * 24 * 60 * 60 * 1000,
+        });
+        
+        res.status(201).json({
+            accessToken,
+            user: { id: userId, email, role: 'user' },
+        });
+    } catch (err: any) {
+        console.error('Ошибка в /register:', err);
+        res.status(500).json({ error: err.message });
+    }
 });
 
 // 📌 POST /auth/login
-authRouter.post('/login', (req: Request<{}, {}, AuthBody>, res: Response) => {
-    const { email, password } = req.body;
+authRouter.post('/login', async (req: Request<{}, {}, AuthBody>, res: Response) => {
+    try {
+        const { email, password } = req.body;
 
-    if (!email || !password) {
-        res.status(400).json({ error: 'Email и пароль обязательны' });
-        return;
-    }
-
-    db.get('SELECT * FROM users WHERE email = ?', [email], async (err, user: User | undefined) => {
-        if (err) {
-            res.status(500).json({ error: err.message });
-            return;
+        if (!email || !password) {
+            return res.status(400).json({ error: 'Email и пароль обязательны' });
         }
 
+        const userResult = await db.execute({
+            sql: 'SELECT * FROM users WHERE email = ?',
+            args: [email]
+        });
+        const user = userResult.rows[0] as unknown as User | undefined;
+
         if (!user) {
-            res.status(401).json({ error: 'Неверный email или пароль' });
-            return;
+            return res.status(401).json({ error: 'Неверный email или пароль' });
         }
 
         const isValid = await comparePassword(password, user.password_hash);
 
         if (!isValid) {
-            res.status(401).json({ error: 'Неверный email или пароль' });
-            return;
+            return res.status(401).json({ error: 'Неверный email или пароль' });
         }
 
         const accessToken = createAccessToken(user.id);
@@ -136,16 +132,9 @@ authRouter.post('/login', (req: Request<{}, {}, AuthBody>, res: Response) => {
 
         console.log(`\n🟢 LOGIN: Пользователь ${email} вошел (ID: ${user.id})`);
 
-        await new Promise<void>((resolve, reject) => {
-            db.run('DELETE FROM refresh_tokens WHERE user_id = ?', [user.id], (delErr) => {
-                if (delErr) {
-                    console.error('❌ Ошибка DELETE в LOGIN:', delErr.message);
-                    reject(delErr);
-                } else {
-                    console.log('🗑️ Старые токены в LOGIN удалены');
-                    resolve();
-                }
-            });
+        await db.execute({
+            sql: 'DELETE FROM refresh_tokens WHERE user_id = ?',
+            args: [user.id]
         });
 
         await saveRefreshToken(user.id, refreshToken);
@@ -160,221 +149,197 @@ authRouter.post('/login', (req: Request<{}, {}, AuthBody>, res: Response) => {
 
         res.json({
             accessToken,
-            user: { id: user.id, email: user.email, role: user.role }, // 👈 ДОБАВИЛИ role
+            user: { id: user.id, email: user.email, role: user.role },
         });
-    });
+    } catch (err: any) {
+        console.error('Ошибка в /login:', err);
+        res.status(500).json({ error: err.message });
+    }
 });
 
 // 📌 POST /auth/refresh
 authRouter.post('/refresh', async (req: Request, res: Response) => {
-    const refreshToken = req.cookies.refreshToken;
-
-    if (!refreshToken) {
-        console.log('❌ REFRESH: Токен отсутствует в куки');
-        res.status(401).json({ error: 'Refresh token отсутствует' });
-        return;
-    }
-
-    let payload;
     try {
-        payload = verifyRefreshToken(refreshToken);
-    } catch {
-        console.log('❌ REFRESH: Невалидный токен');
-        res.status(401).json({ error: 'Невалидный refresh token' });
-        return;
-    }
+        const refreshToken = req.cookies.refreshToken;
 
-    const stored = await findRefreshToken(refreshToken);
+        if (!refreshToken) {
+            console.log('❌ REFRESH: Токен отсутствует в куки');
+            return res.status(401).json({ error: 'Refresh token отсутствует' });
+        }
 
-    if (!stored) {
-        console.log('❌ REFRESH: Токен не найден в базе (возможно, удален)');
-        res.clearCookie('refreshToken', {
+        let payload;
+        try {
+            payload = verifyRefreshToken(refreshToken);
+        } catch {
+            console.log('❌ REFRESH: Невалидный токен');
+            return res.status(401).json({ error: 'Невалидный refresh token' });
+        }
+
+        const stored = await findRefreshToken(refreshToken);
+
+        if (!stored || stored.revoked === 1) {
+            console.log('❌ REFRESH: Токен отозван или не найден');
+            res.clearCookie('refreshToken', { httpOnly: true, secure: config.isProd, sameSite: 'lax' });
+            return res.status(401).json({ error: 'Refresh token отозван' });
+        }
+
+        if (new Date(stored.expires_at).getTime() < Date.now()) {
+            console.log('❌ REFRESH: Токен истек');
+            res.clearCookie('refreshToken', { httpOnly: true, secure: config.isProd, sameSite: 'lax' });
+            return res.status(401).json({ error: 'Refresh token истёк' });
+        }
+
+        console.log('🔄 REFRESH: Обновляем токен для user:', payload.userId);
+
+        const tokenHash = hashToken(refreshToken);
+        
+        // Удаляем старый токен
+        await db.execute({
+            sql: 'DELETE FROM refresh_tokens WHERE token_hash = ?',
+            args: [tokenHash]
+        });
+        console.log('🗑️ Старый токен в REFRESH удален');
+
+        const newAccessToken = createAccessToken(payload.userId);
+        const newRefreshToken = createRefreshToken(payload.userId);
+        
+        await saveRefreshToken(payload.userId, newRefreshToken);
+        console.log('✅ Новый токен сохранен в REFRESH');
+
+        res.cookie('refreshToken', newRefreshToken, {
             httpOnly: true,
             secure: config.isProd,
             sameSite: 'lax',
+            maxAge: 7 * 24 * 60 * 60 * 1000,
         });
-        res.status(401).json({ error: 'Refresh token отозван' });
-        return;
+
+        res.json({ accessToken: newAccessToken });
+    } catch (err: any) {
+        console.error('Ошибка в /refresh:', err);
+        res.status(500).json({ error: err.message });
     }
-
-    if (stored.revoked === 1) {
-        console.log('❌ REFRESH: Токен помечен как revoked');
-        res.clearCookie('refreshToken', {
-            httpOnly: true,
-            secure: config.isProd,
-            sameSite: 'lax',
-        });
-        res.status(401).json({ error: 'Refresh token отозван' });
-        return;
-    }
-
-    if (new Date(stored.expires_at).getTime() < Date.now()) {
-        console.log('❌ REFRESH: Токен истек');
-        res.clearCookie('refreshToken', {
-            httpOnly: true,
-            secure: config.isProd,
-            sameSite: 'lax',
-        });
-        res.status(401).json({ error: 'Refresh token истёк' });
-        return;
-    }
-
-    console.log('🔄 REFRESH: Обновляем токен для user:', payload.userId);
-
-    const tokenHash = hashToken(refreshToken);
-    await new Promise<void>((resolve, reject) => {
-        db.run('DELETE FROM refresh_tokens WHERE token_hash = ?', [tokenHash], (delErr) => {
-            if (delErr) {
-                console.error('❌ Ошибка DELETE в REFRESH:', delErr.message);
-                reject(delErr);
-            } else {
-                console.log('🗑️ Старый токен в REFRESH удален');
-                resolve();
-            }
-        });
-    });
-
-    const newAccessToken = createAccessToken(payload.userId);
-    const newRefreshToken = createRefreshToken(payload.userId);
-    await saveRefreshToken(payload.userId, newRefreshToken);
-    console.log('✅ Новый токен сохранен в REFRESH');
-
-    res.cookie('refreshToken', newRefreshToken, {
-        httpOnly: true,
-        secure: config.isProd,
-        sameSite: 'lax',
-        maxAge: 7 * 24 * 60 * 60 * 1000,
-    });
-
-    res.json({ accessToken: newAccessToken });
 });
 
 // 📌 POST /auth/logout
 authRouter.post('/logout', async (req: Request, res: Response) => {
-    const refreshToken = req.cookies.refreshToken;
+    try {
+        const refreshToken = req.cookies.refreshToken;
 
-    if (refreshToken) {
-        console.log('🚪 LOGOUT: Удаляем токен при выходе');
-        const tokenHash = hashToken(refreshToken);
-        await new Promise<void>((resolve) => {
-            db.run('DELETE FROM refresh_tokens WHERE token_hash = ?', [tokenHash], (delErr) => {
-                if (delErr) console.error('❌ Ошибка DELETE в LOGOUT:', delErr.message);
-                else console.log('🗑️ Токен удален в LOGOUT');
-                resolve();
+        if (refreshToken) {
+            console.log('🚪 LOGOUT: Удаляем токен при выходе');
+            const tokenHash = hashToken(refreshToken);
+            await db.execute({
+                sql: 'DELETE FROM refresh_tokens WHERE token_hash = ?',
+                args: [tokenHash]
             });
+            console.log('🗑️ Токен удален в LOGOUT');
+        }
+
+        res.clearCookie('refreshToken', {
+            httpOnly: true,
+            secure: config.isProd,
+            sameSite: 'lax',
         });
+
+        res.json({ message: 'Выход выполнен' });
+    } catch (err: any) {
+        res.status(500).json({ error: err.message });
     }
-
-    res.clearCookie('refreshToken', {
-        httpOnly: true,
-        secure: config.isProd,
-        sameSite: 'lax',
-    });
-
-    res.json({ message: 'Выход выполнен' });
 });
 
 // 📌 GET /auth/me
-authRouter.get('/me', authMiddleware, (req: AuthRequest, res: Response) => {
-    res.setHeader('Cache-Control', 'no-store');
-    
-    // 👇 ДОБАВИЛИ role в SELECT
-    db.get('SELECT id, email, role FROM users WHERE id = ?', [req.userId], (err, user) => {
-        if (err) {
-            res.status(500).json({ error: err.message });
-            return;
-        }
+authRouter.get('/me', authMiddleware, async (req: AuthRequest, res: Response) => {
+    try {
+        res.setHeader('Cache-Control', 'no-store');
+        
+        const userResult = await db.execute({
+            sql: 'SELECT id, email, role FROM users WHERE id = ?',
+            args: [req.userId!]
+        });
+        const user = userResult.rows[0];
 
         if (!user) {
-            res.status(404).json({ error: 'Пользователь не найден' });
-            return;
+            return res.status(404).json({ error: 'Пользователь не найден' });
         }
 
         res.json({ user });
-    });
+    } catch (err: any) {
+        res.status(500).json({ error: err.message });
+    }
 });
 
 // 📌 POST /auth/forgot-password
 authRouter.post('/forgot-password', async (req: Request, res: Response) => {
-    const { email } = req.body;
+    try {
+        const { email } = req.body;
 
-    if (!email) {
-        res.status(400).json({ error: 'Email обязателен' });
-        return;
-    }
+        if (!email) return res.status(400).json({ error: 'Email обязателен' });
 
-    db.get('SELECT * FROM users WHERE email = ?', [email], async (err, user: User | undefined) => {
-        if (err || !user) {
-            res.json({ message: 'Если email зарегистрирован, письмо отправлено' });
-            return;
+        const userResult = await db.execute({
+            sql: 'SELECT * FROM users WHERE email = ?',
+            args: [email]
+        });
+        const user = userResult.rows[0] as unknown as User | undefined;
+
+        if (!user) {
+            // Не палим, есть ли такой email
+            return res.json({ message: 'Если email зарегистрирован, письмо отправлено' });
         }
 
         const resetToken = crypto.randomBytes(32).toString('hex');
         const expiresAt = new Date(Date.now() + 3600 * 1000).toISOString();
 
-        db.run(
-            'UPDATE users SET reset_token = ?, reset_token_expires = ? WHERE id = ?',
-            [resetToken, expiresAt, user.id],
-            async (updateErr) => {
-                if (!updateErr) {
-                    try {
-                        await sendResetEmail(user.email, resetToken);
-                    } catch (mailErr) {
-                        console.error('❌ Ошибка отправки письма:', mailErr);
-                    }
-                }
-                res.json({ message: 'Если email зарегистрирован, письмо отправлено' });
-            }
-        );
-    });
+        await db.execute({
+            sql: 'UPDATE users SET reset_token = ?, reset_token_expires = ? WHERE id = ?',
+            args: [resetToken, expiresAt, user.id]
+        });
+
+        try {
+            await sendResetEmail(user.email, resetToken);
+        } catch (mailErr) {
+            console.error('❌ Ошибка отправки письма:', mailErr);
+        }
+
+        res.json({ message: 'Если email зарегистрирован, письмо отправлено' });
+    } catch (err: any) {
+        res.status(500).json({ error: err.message });
+    }
 });
 
 // 📌 POST /auth/reset-password
 authRouter.post('/reset-password', async (req: Request, res: Response) => {
-    const { token, newPassword } = req.body;
+    try {
+        const { token, newPassword } = req.body;
 
-    if (!token || !newPassword || newPassword.length < 6) {
-        res.status(400).json({ error: 'Неверные данные' });
-        return;
-    }
-
-    db.get(
-        'SELECT * FROM users WHERE reset_token = ? AND reset_token_expires > ?',
-        [token, new Date().toISOString()],
-        async (err, user: User | undefined) => {
-            if (err) {
-                res.status(500).json({ error: 'Ошибка сервера' });
-                return;
-            }
-
-            if (!user) {
-                res.status(400).json({ error: 'Токен недействителен или истек' });
-                return;
-            }
-
-            const passwordHash = await hashPassword(newPassword);
-
-            db.run(
-                'UPDATE users SET password_hash = ?, reset_token = NULL, reset_token_expires = NULL WHERE id = ?',
-                [passwordHash, user.id],
-                (updateErr) => {
-                    if (updateErr) {
-                        res.status(500).json({ error: 'Не удалось обновить пароль' });
-                        return;
-                    }
-
-                    db.run(
-                        'DELETE FROM refresh_tokens WHERE user_id = ?',
-                        [user.id],
-                        (deleteErr) => {
-                            if (deleteErr) {
-                                console.error('❌ Ошибка удаления refresh-токенов:', deleteErr);
-                            }
-                            res.json({ message: 'Пароль успешно изменен. Все сессии сброшены.' });
-                        }
-                    );
-                }
-            );
+        if (!token || !newPassword || newPassword.length < 6) {
+            return res.status(400).json({ error: 'Неверные данные' });
         }
-    );
+
+        const userResult = await db.execute({
+            sql: 'SELECT * FROM users WHERE reset_token = ? AND reset_token_expires > ?',
+            args: [token, new Date().toISOString()]
+        });
+        const user = userResult.rows[0] as unknown as User | undefined;
+
+        if (!user) {
+            return res.status(400).json({ error: 'Токен недействителен или истек' });
+        }
+
+        const passwordHash = await hashPassword(newPassword);
+
+        await db.execute({
+            sql: 'UPDATE users SET password_hash = ?, reset_token = NULL, reset_token_expires = NULL WHERE id = ?',
+            args: [passwordHash, user.id]
+        });
+
+        // Сбрасываем все сессии
+        await db.execute({
+            sql: 'DELETE FROM refresh_tokens WHERE user_id = ?',
+            args: [user.id]
+        });
+
+        res.json({ message: 'Пароль успешно изменен. Все сессии сброшены.' });
+    } catch (err: any) {
+        res.status(500).json({ error: err.message });
+    }
 });

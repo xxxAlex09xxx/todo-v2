@@ -1,116 +1,67 @@
-// server/src/db.ts
-import sqlite3 from 'sqlite3';
-import { Database } from 'sqlite3';
 
-export const db: Database = new sqlite3.Database('./todos.db', (err) => {
-    if (err) {
-        console.error('❌ Ошибка подключения к БД:', err.message);
-    } else {
-        console.log('✅ Подключено к SQLite');
-        createTables();
+import 'dotenv/config';
+
+
+// Клиент будет создан при инициализации базы
+export let db: any;
+
+// Функция для создания таблиц при старте сервера
+export async function initDb() {
+    try {
+        console.log('⏳ Подключение к Turso и инициализация таблиц...');
+
+        // Динамически загружаем ES-модуль
+        const { createClient } = await import('@libsql/client');
+
+        db = createClient({
+            url: process.env.TURSO_DATABASE_URL!,
+            authToken: process.env.TURSO_AUTH_TOKEN!,
+        });
+
+        // 1. Таблица пользователей
+        await db.execute(`
+            CREATE TABLE IF NOT EXISTS users (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                email TEXT NOT NULL UNIQUE,
+                password_hash TEXT NOT NULL,
+                name TEXT DEFAULT 'Пользователь',
+                role TEXT DEFAULT 'user',
+                status TEXT DEFAULT 'active',
+                reset_token TEXT,
+                reset_token_expires DATETIME,
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+            )
+        `);
+
+        // 2. Таблица refresh-токенов
+        await db.execute(`
+            CREATE TABLE IF NOT EXISTS refresh_tokens (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER NOT NULL,
+                token_hash TEXT NOT NULL UNIQUE,
+                expires_at DATETIME NOT NULL,
+                revoked INTEGER DEFAULT 0,
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+            )
+        `);
+
+        // 3. Таблица задач
+        await db.execute(`
+            CREATE TABLE IF NOT EXISTS todos (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                title TEXT NOT NULL,
+                description TEXT NOT NULL DEFAULT '',
+                completed INTEGER DEFAULT 0,
+                user_id INTEGER NOT NULL,
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+            )
+        `);
+
+        console.log('✅ Все таблицы в Turso успешно созданы!');
+    } catch (error) {
+        console.error('❌ Ошибка инициализации БД Turso:', error);
+        throw error;
     }
-});
-
-function createTables(): void {
-    // Таблица пользователей
-    db.run(`
-        CREATE TABLE IF NOT EXISTS users (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            email TEXT NOT NULL UNIQUE,
-            password_hash TEXT NOT NULL,
-            created_at DATETIME DEFAULT CURRENT_TIMESTAMP
-        )
-    `, (err) => {
-        if (err) {
-            console.error('❌ Ошибка создания таблицы users:', err.message);
-        } else {
-            console.log('✅ Таблица users готова');
-        }
-    });
-
-    // Таблица refresh-токенов
-    db.run(`
-        CREATE TABLE IF NOT EXISTS refresh_tokens (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            user_id INTEGER NOT NULL,
-            token_hash TEXT NOT NULL UNIQUE,
-            expires_at DATETIME NOT NULL,
-            revoked INTEGER DEFAULT 0,
-            created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-            FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
-        )
-    `, (err) => {
-        if (err) {
-            console.error('❌ Ошибка создания таблицы refresh_tokens:', err.message);
-        } else {
-            console.log('✅ Таблица refresh_tokens готова');
-        }
-    });
-
-    // 👇 Таблица задач — добавлена сюда
-    db.run(`
-        CREATE TABLE IF NOT EXISTS todos (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            title TEXT NOT NULL,
-            description TEXT NOT NULL DEFAULT '',
-            completed INTEGER DEFAULT 0,
-            user_id INTEGER NOT NULL,
-            created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-            FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
-        )
-    `, (err) => {
-        if (err) {
-            console.error('❌ Ошибка создания таблицы todos:', err.message);
-        } else {
-            console.log('✅ Таблица todos готова');
-        }
-    });
-
-    // ⚠️ Миграция для старых БД — добавит description, если её ещё нет.
-    db.run(`ALTER TABLE todos ADD COLUMN description TEXT NOT NULL DEFAULT ''`, (err) => {
-        if (err && !err.message.includes('duplicate column')) {
-            console.error('❌ Миграция description не удалась:', err.message);
-        }
-    });
-
-    // ⚠️ Миграции для таблицы users (для сброса пароля)
-    db.run(`ALTER TABLE users ADD COLUMN reset_token TEXT`, (err) => {
-        if (err && !err.message.includes('duplicate column')) {
-            console.error('❌ Миграция reset_token не удалась:', err.message);
-        }
-    });
-
-    db.run(`ALTER TABLE users ADD COLUMN reset_token_expires DATETIME`, (err) => {
-        if (err && !err.message.includes('duplicate column')) {
-            console.error('❌ Миграция reset_token_expires не удалась:', err.message);
-        }
-    });
-
-    // ⚠️ Миграция для таблицы users (добавляем роль)
-    db.run(`ALTER TABLE users ADD COLUMN role TEXT DEFAULT 'user'`, (err) => {
-        if (err && !err.message.includes('duplicate column')) {
-            console.error('❌ Миграция role не удалась:', err.message);
-        } else {
-            console.log('✅ Колонка role готова (или уже была)');
-        }
-    });
-
-    // 👇 НОВЫЕ МИГРАЦИИ ДЛЯ АДМИНКИ
-    // Добавляем имя (по умолчанию будет 'Пользователь', если не задано)
-    db.run(`ALTER TABLE users ADD COLUMN name TEXT DEFAULT 'Пользователь'`, (err) => {
-        if (err && !err.message.includes('duplicate column')) {
-            console.error('❌ Миграция name не удалась:', err.message);
-        } else {
-            console.log('✅ Колонка name готова (или уже была)');
-        }
-    });
-
-    // Добавляем статус (по умолчанию 'active')
-    db.run(`ALTER TABLE users ADD COLUMN status TEXT DEFAULT 'active'`, (err) => {
-        if (err && !err.message.includes('duplicate column')) {
-            console.error('❌ Миграция status не удалась:', err.message);
-        } else {
-            console.log('✅ Колонка status готова (или уже была)');
-        }
-    });
 }
