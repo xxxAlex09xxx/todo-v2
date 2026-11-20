@@ -1,7 +1,9 @@
 
 import { apiFetch } from '@/shared/api/client';
 
-const API_URL = 'http://localhost:5000/admin/users';
+
+//const API_URL = 'http://localhost:5000/admin/users';
+const API_URL = '/admin/users';
 
 // Пользователь с сервера
 export interface UserFromServer {
