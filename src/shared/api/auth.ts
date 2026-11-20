@@ -2,7 +2,9 @@ import {setAccessToken, getAccessToken} from './auth-token'
 import { apiFetch } from './client';
 import { refresh } from './auth-refresh';
 
-const AUTH_URL = 'http://localhost:5000/auth';
+//const AUTH_URL = 'http://localhost:5000/auth';
+const AUTH_URL = '/auth';
+
 
 export interface User {
     id: number;
