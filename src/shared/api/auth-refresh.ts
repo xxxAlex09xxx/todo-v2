@@ -1,7 +1,9 @@
 // app/api/auth-refresh.ts
 import { setAccessToken } from './auth-token';
 
-const AUTH_URL = 'http://localhost:5000/auth';
+//const AUTH_URL = 'http://localhost:5000/auth';
+const AUTH_URL = '/auth';
+;
 
 let refreshPromise: Promise<string> | null = null;
 export const refresh = async (): Promise<string> => {
