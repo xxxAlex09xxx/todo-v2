@@ -2,7 +2,9 @@
 import { apiFetch } from '@/shared/api/client';
 import type { Todo } from '../model/types';
 
-const API_URL = 'http://localhost:5000/todos';
+//const API_URL = 'http://localhost:5000/todos';
+const API_URL = '/todos';
+
 
 // Тип задачи с сервера (completed приходит как 0/1)
 interface TodoFromServer {
