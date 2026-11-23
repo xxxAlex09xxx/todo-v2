@@ -1,8 +1,9 @@
 // src/widgets/todo-stats/ui/TodoStats.tsx
-import { useTodos, TodoState } from '@/entities/todo';
+import { TodoState, useTodos } from '@/entities/todo';
 
 export const TodoStats = () => {
-    const { stats } = useTodos(); 
+  
+    const { stats } = useTodos(1, 'all');
 
     return (
         <TodoState 
