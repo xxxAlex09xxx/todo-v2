@@ -14,13 +14,15 @@
     margin-right: 4px;      
 }
 .submitButton {
-    padding: 0.75rem;
-    font-size: 1rem;
-    width: 90px;
-    color: $color-bg;
+    text-decoration: none;
+    padding: 8px 16px;  
+    font-size: 14px;    
+    width: auto;         
+    min-width: 80px;    
+    color: #fff;
     background: $color-primary-light;
     border: none;
-    border-radius: 0.625rem;
+    border-radius: 8px;
     cursor: pointer;
     transition: background 0.2s, box-shadow 0.2s, transform 0.1s;
 

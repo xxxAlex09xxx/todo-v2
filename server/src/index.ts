@@ -1,11 +1,13 @@
 // server/src/index.ts
 import { config } from './config';
-import express, { Request, Response } from 'express';
+import express, { Request, Response, NextFunction } from 'express';
 import cors from 'cors';
 import cookieParser from 'cookie-parser';
-import  './db';
+import './db';
 import { authRouter } from './routes/auth';
 import { todosRouter } from './routes/todos';
+import adminRouter from './routes/users';
+
 const app = express();
 const PORT = config.port;
 
@@ -31,19 +33,27 @@ app.use(cors({
             callback(new Error('Not allowed by CORS'));
         }
     },
-    credentials: true,   // ← ВАЖНО для cookies
-    methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH',  'OPTIONS'],
-    allowedHeaders: ['Content-Type', 'Authorization','Cache-Control'],
+    credentials: true,
+    methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS'],
+    allowedHeaders: ['Content-Type', 'Authorization', 'Cache-Control'],
 }));
 
 app.use(express.json());
-app.use(cookieParser());   // ← для чтения cookies
+app.use(cookieParser());
 
 app.use('/auth', authRouter);
 app.use('/todos', todosRouter);
+app.use('/admin', adminRouter);
 
+// 404
 app.use((req: Request, res: Response) => {
     res.status(404).json({ error: 'Route not found' });
+});
+
+// error handler (4 аргумента — обязательны)
+app.use((err: Error, _req: Request, res: Response, _next: NextFunction) => {
+    console.error('💥', err.message);
+    res.status(500).json({ error: err.message || 'Внутренняя ошибка' });
 });
 
 app.listen(PORT, () => {

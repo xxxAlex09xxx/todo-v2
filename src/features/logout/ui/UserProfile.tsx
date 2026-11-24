@@ -11,7 +11,7 @@ return (
 <div className={style.wrapper}>
     {/* 👇 Ссылка на админку (только для админа) */}
     {user?.role === 'admin' && (
-        <Link to="/admin" className={style.adminLink}>
+        <Link to="/admin" className={style.submitButton}>
             Админка
         </Link>
     )}

@@ -7,7 +7,15 @@ export const db: Database = new sqlite3.Database('./todos.db', (err) => {
         console.error('❌ Ошибка подключения к БД:', err.message);
     } else {
         console.log('✅ Подключено к SQLite');
-        createTables();
+        // 👇 КРИТИЧНО: без этого ON DELETE CASCADE не сработает!
+        db.run('PRAGMA foreign_keys = ON', (pragmaErr) => {
+            if (pragmaErr) {
+                console.error('❌ Не удалось включить foreign_keys:', pragmaErr.message);
+            } else {
+                console.log('✅ PRAGMA foreign_keys = ON');
+            }
+            createTables();
+        });
     }
 });
 
@@ -47,7 +55,7 @@ function createTables(): void {
         }
     });
 
-    // 👇 Таблица задач — добавлена сюда
+    // Таблица задач
     db.run(`
         CREATE TABLE IF NOT EXISTS todos (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -66,18 +74,14 @@ function createTables(): void {
         }
     });
 
-    // ⚠️ Миграция для старых БД — добавит description, если её ещё нет.
-    // Если колонка уже есть — будет ошибка "duplicate column", её глотаем.
+    // ⚠️ Миграция для старых БД — description у todos
     db.run(`ALTER TABLE todos ADD COLUMN description TEXT NOT NULL DEFAULT ''`, (err) => {
         if (err && !err.message.includes('duplicate column')) {
             console.error('❌ Миграция description не удалась:', err.message);
         }
     });
-    // server/src/db.ts
 
-// ... (предыдущий код с миграцией description) ...
-
-    // ⚠️ Миграции для таблицы users (для сброса пароля)
+    // ⚠️ Миграции для users (сброс пароля)
     db.run(`ALTER TABLE users ADD COLUMN reset_token TEXT`, (err) => {
         if (err && !err.message.includes('duplicate column')) {
             console.error('❌ Миграция reset_token не удалась:', err.message);
@@ -90,8 +94,8 @@ function createTables(): void {
         }
     });
 
-        // ⚠️ Миграция для таблицы users (добавляем роль)
-    db.run(`ALTER TABLE users ADD COLUMN role TEXT DEFAULT 'user'`, (err) => {
+    // ⚠️ Миграция для users (роль)
+    db.run(`ALTER TABLE users ADD COLUMN role TEXT NOT NULL DEFAULT 'user'`, (err) => {
         if (err && !err.message.includes('duplicate column')) {
             console.error('❌ Миграция role не удалась:', err.message);
         } else {
@@ -99,4 +103,21 @@ function createTables(): void {
         }
     });
 
+    // 👇 НОВОЕ: имя пользователя (нужно для админки)
+    db.run(`ALTER TABLE users ADD COLUMN name TEXT NOT NULL DEFAULT ''`, (err) => {
+        if (err && !err.message.includes('duplicate column')) {
+            console.error('❌ Миграция name не удалась:', err.message);
+        } else {
+            console.log('✅ Колонка name готова (или уже была)');
+        }
+    });
+
+    // 👇 НОВОЕ: статус пользователя (нужно для админки)
+    db.run(`ALTER TABLE users ADD COLUMN status TEXT NOT NULL DEFAULT 'active'`, (err) => {
+        if (err && !err.message.includes('duplicate column')) {
+            console.error('❌ Миграция status не удалась:', err.message);
+        } else {
+            console.log('✅ Колонка status готова (или уже была)');
+        }
+    });
 }
